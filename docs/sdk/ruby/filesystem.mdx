@@ -59,7 +59,7 @@ Read file bytes.
 <div className="msb-params">
   <div className="msb-param">
     <div className="msb-param-key"><span className="msb-type">String</span></div>
-    <div className="msb-param-desc">Read file bytes.</div>
+    <div className="msb-param-desc">File contents as bytes.</div>
   </div>
 </div>
 
@@ -149,7 +149,7 @@ List directory entries.
 <div className="msb-params">
   <div className="msb-param">
     <div className="msb-param-key"><span className="msb-type">Array&lt;Hash&gt;</span></div>
-    <div className="msb-param-desc">List directory entries.</div>
+    <div className="msb-param-desc">Directory entries.</div>
   </div>
 </div>
 
@@ -175,7 +175,7 @@ Read metadata.
 <div className="msb-params">
   <div className="msb-param">
     <div className="msb-param-key"><span className="msb-type">Hash</span></div>
-    <div className="msb-param-desc">Read metadata.</div>
+    <div className="msb-param-desc">File metadata.</div>
   </div>
 </div>
 
@@ -201,7 +201,7 @@ Check whether a path exists.
 <div className="msb-params">
   <div className="msb-param">
     <div className="msb-param-key"><span className="msb-type">Boolean</span></div>
-    <div className="msb-param-desc">Check whether a path exists.</div>
+    <div className="msb-param-desc">Whether the path exists.</div>
   </div>
 </div>
 
@@ -394,34 +394,34 @@ Hashes use string keys. Optional timestamps are omitted when unavailable. Ruby d
 <div className="msb-params">
   <div className="msb-param">
     <div className="msb-param-key"><code>&quot;path&quot;</code><span className="msb-type">String</span></div>
-    <div className="msb-param-desc">Entry path; returned by list</div>
+    <div className="msb-param-desc">Entry path; returned by list.</div>
   </div>
   <div className="msb-param">
     <div className="msb-param-key"><code>&quot;kind&quot;</code><span className="msb-type">String</span></div>
-    <div className="msb-param-desc">file, directory, symlink, or other</div>
+    <div className="msb-param-desc">file, directory, symlink, or other.</div>
   </div>
   <div className="msb-param">
     <div className="msb-param-key"><code>&quot;size&quot;</code><span className="msb-type">Integer</span></div>
-    <div className="msb-param-desc">Size in bytes</div>
+    <div className="msb-param-desc">Size in bytes.</div>
   </div>
   <div className="msb-param">
     <div className="msb-param-key"><code>&quot;mode&quot;</code><span className="msb-type">Integer</span></div>
-    <div className="msb-param-desc">File mode</div>
+    <div className="msb-param-desc">File mode.</div>
   </div>
   <div className="msb-param">
     <div className="msb-param-key"><code>&quot;uid&quot;, &quot;gid&quot;</code><span className="msb-type">Integer</span></div>
-    <div className="msb-param-desc">Owner and group IDs</div>
+    <div className="msb-param-desc">Owner and group IDs.</div>
   </div>
   <div className="msb-param">
     <div className="msb-param-key"><code>&quot;modified&quot;, &quot;accessed&quot;</code><span className="msb-type">String</span></div>
-    <div className="msb-param-desc">RFC 3339 timestamps, when available</div>
+    <div className="msb-param-desc">RFC 3339 timestamps, when available.</div>
   </div>
   <div className="msb-param">
     <div className="msb-param-key"><code>&quot;readonly&quot;</code><span className="msb-type">Boolean</span></div>
-    <div className="msb-param-desc">Returned by stat</div>
+    <div className="msb-param-desc">Returned by stat.</div>
   </div>
   <div className="msb-param">
     <div className="msb-param-key"><code>&quot;created&quot;</code><span className="msb-type">String</span></div>
-    <div className="msb-param-desc">Creation timestamp, when available from stat</div>
+    <div className="msb-param-desc">Creation timestamp, when available from stat.</div>
   </div>
 </div>
