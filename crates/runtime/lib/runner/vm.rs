@@ -2570,13 +2570,32 @@ fn build_vm(
         let net_backend = network.take_backend();
 
         {
-            let tls_dir = config.runtime_dir.join("tls");
-            let _ = std::fs::create_dir_all(&tls_dir);
-            if let Some(ca_pem) = network.ca_cert_pem() {
-                let _ = std::fs::write(tls_dir.join("ca.pem"), &ca_pem);
-            }
-            if let Some(host_cas_pem) = network.host_cas_cert_pem() {
-                let _ = std::fs::write(tls_dir.join("host-cas.pem"), &host_cas_pem);
+            let ca_cert_pem = network.ca_cert_pem();
+            let host_cas_cert_pem = network.host_cas_cert_pem();
+            if let Err(error) = write_runtime_tls_files(
+                &config.runtime_dir,
+                ca_cert_pem.as_deref(),
+                host_cas_cert_pem.as_deref(),
+            ) {
+                // A restored guest may already have opened `tls/ca.pem` through the
+                // captured `msb_runtime` (virtio_fs1) mount before the snapshot was
+                // taken; reconnecting that mount without the file back in place fails
+                // closed with ENOENT deep inside the guest instead of here, so fail the
+                // restore now with a clear message. A fresh boot has no prior guest
+                // expectation of the file, so it keeps today's best-effort behavior:
+                // network secret substitution and host CA trust may not work, but the
+                // sandbox still starts. The failure is now logged either way instead of
+                // silently discarded.
+                if vm.checkpoint_restore.is_some() {
+                    return Err(RuntimeError::Custom(format!(
+                        "write restored runtime TLS files: {error}"
+                    )));
+                }
+                tracing::warn!(
+                    %error,
+                    "failed to write runtime TLS files; guest network secret substitution \
+                     and host CA trust may not work"
+                );
             }
         }
 
@@ -2724,6 +2743,38 @@ fn encode_bootstrap_frame(bootstrap: &GuestBootstrap) -> RuntimeResult<Vec<u8>> 
 //--------------------------------------------------------------------------------------------------
 // Functions: Helpers
 //--------------------------------------------------------------------------------------------------
+
+/// Write the runtime-share TLS files that expose the TLS-intercepting CA (and,
+/// when enabled, the trusted host CA bundle) to the guest over the
+/// `msb_runtime` share (virtio_fs1): `runtime_dir/tls/ca.pem` and
+/// `runtime_dir/tls/host-cas.pem`.
+///
+/// Creates `runtime_dir/tls` even when both inputs are absent, matching the
+/// share's expected layout. Each file is written only when its PEM bytes are
+/// present; absent bytes are skipped rather than truncating an existing file.
+///
+/// # Ordering invariant
+///
+/// Callers MUST write these files before [`relay::AgentRelay::activate_restored`]
+/// resumes a restored guest and its `msb_runtime` handles reconnect: a guest
+/// process that already held `tls/ca.pem` open across the snapshot expects the
+/// file to exist again immediately on resume, and a reconnect that races the
+/// write fails with `ENOENT` deep inside the guest instead of here.
+fn write_runtime_tls_files(
+    runtime_dir: &Path,
+    ca_cert_pem: Option<&[u8]>,
+    host_cas_cert_pem: Option<&[u8]>,
+) -> std::io::Result<()> {
+    let tls_dir = runtime_dir.join("tls");
+    std::fs::create_dir_all(&tls_dir)?;
+    if let Some(ca_pem) = ca_cert_pem {
+        std::fs::write(tls_dir.join("ca.pem"), ca_pem)?;
+    }
+    if let Some(host_cas_pem) = host_cas_cert_pem {
+        std::fs::write(tls_dir.join("host-cas.pem"), host_cas_pem)?;
+    }
+    Ok(())
+}
 
 fn publish_control_endpoint(
     control_sock_path: PathBuf,
@@ -3705,7 +3756,7 @@ mod tests {
         append_block_root_env, bind_rootfs_backend, encode_bootstrap_frame,
         guest_shutdown_flush_timeout, guest_shutdown_flush_timeout_with_override, parse_mount_spec,
         prepend_scripts_path, request_guest_shutdown, request_guest_shutdown_with_timeout,
-        thp_kernel_cmdline, validate_disk_format,
+        thp_kernel_cmdline, validate_disk_format, write_runtime_tls_files,
     };
     #[cfg(unix)]
     use super::{
@@ -4423,5 +4474,43 @@ mod tests {
         let mut env = vec!["PATH=/.msb/scripts:/usr/bin".to_string()];
         prepend_scripts_path(&mut env);
         assert_eq!(env, vec!["PATH=/.msb/scripts:/usr/bin".to_string()]);
+    }
+
+    #[test]
+    fn write_runtime_tls_files_writes_both_and_creates_tls_dir() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let tls_dir = runtime_dir.path().join("tls");
+        assert!(!tls_dir.exists());
+        write_runtime_tls_files(runtime_dir.path(), Some(b"ca-pem"), Some(b"host-cas-pem"))
+            .unwrap();
+        assert_eq!(std::fs::read(tls_dir.join("ca.pem")).unwrap(), b"ca-pem");
+        assert_eq!(
+            std::fs::read(tls_dir.join("host-cas.pem")).unwrap(),
+            b"host-cas-pem"
+        );
+    }
+
+    #[test]
+    fn write_runtime_tls_files_creates_tls_dir_even_with_no_inputs() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        write_runtime_tls_files(runtime_dir.path(), None, None).unwrap();
+        assert!(runtime_dir.path().join("tls").is_dir());
+    }
+
+    #[test]
+    fn write_runtime_tls_files_skips_absent_inputs() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let tls_dir = runtime_dir.path().join("tls");
+        write_runtime_tls_files(runtime_dir.path(), Some(b"ca-pem"), None).unwrap();
+        assert!(tls_dir.join("ca.pem").exists());
+        assert!(!tls_dir.join("host-cas.pem").exists());
+    }
+
+    #[test]
+    fn write_runtime_tls_files_propagates_errors_when_runtime_dir_is_a_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime_dir = temp.path().join("not-a-dir");
+        std::fs::write(&runtime_dir, b"occupied").unwrap();
+        assert!(write_runtime_tls_files(&runtime_dir, Some(b"ca-pem"), None).is_err());
     }
 }

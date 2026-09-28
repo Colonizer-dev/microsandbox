@@ -65,6 +65,7 @@ struct FileSnapshotMetadata<'a> {
     source_sandbox: &'a str,
     root_disk: SnapshotRootDisk,
     user: Option<String>,
+    restore_secrets: Option<microsandbox_image::snapshot::RestoreSecretsPayload>,
 }
 
 #[derive(Clone)]
@@ -408,6 +409,7 @@ async fn capture_installed(
             source_sandbox: &source_sandbox,
             root_disk,
             user: sandbox_config.spec.runtime.user.clone(),
+            restore_secrets: capture_restore_secrets(&sandbox_config.spec.network),
         },
     )
     .await;
@@ -723,6 +725,9 @@ pub(super) async fn create_snapshot_archive(
     manifest.set_restore_defaults(microsandbox_image::snapshot::RestoreDefaults {
         user: sandbox_config.spec.runtime.user.clone(),
     })?;
+    if let Some(secrets) = capture_restore_secrets(&sandbox_config.spec.network) {
+        manifest.set_restore_secrets(secrets)?;
+    }
     if record_integrity && let SnapshotState::File(file) = &mut manifest.state {
         for index in 0..file.layers.len() {
             let source = &disk.sources[index].path;
@@ -982,6 +987,9 @@ async fn capture_full_snapshot(
         manifest.set_restore_defaults(microsandbox_image::snapshot::RestoreDefaults {
             user: sandbox_config.spec.runtime.user.clone(),
         })?;
+        if let Some(secrets) = capture_restore_secrets(&sandbox_config.spec.network) {
+            manifest.set_restore_secrets(secrets)?;
+        }
         manifest.set_owned_volumes(closure.checkpoint().owned_volumes.clone())?;
         manifest
             .validate()
@@ -1075,6 +1083,7 @@ async fn build_artifact(
         source_sandbox,
         root_disk,
         user,
+        restore_secrets,
     } = metadata;
     let total_started = Instant::now();
     let snapshot_id = SnapshotId::new(format!("snap_{:032x}", rand::random::<u128>()))
@@ -1149,6 +1158,9 @@ async fn build_artifact(
         root_disk,
     )?;
     manifest.set_restore_defaults(microsandbox_image::snapshot::RestoreDefaults { user })?;
+    if let Some(secrets) = restore_secrets {
+        manifest.set_restore_secrets(secrets)?;
+    }
     let canonical = manifest
         .to_canonical_bytes()
         .map_err(|e| MicrosandboxError::Custom(format!("manifest serialize: {e}")))?;
@@ -1774,6 +1786,32 @@ fn oci_reference_string(config: &SandboxConfig) -> MicrosandboxResult<String> {
     }
 }
 
+/// Build the captured secret descriptors and TLS state to record on a snapshot's
+/// manifest, or `None` when the source sandbox configured no secrets — keeping
+/// the manifest's released bytes identical to a build that never captures this
+/// extension. Never carries a secret value: only descriptors (env var,
+/// placeholder, allowed hosts, ...) and the source's secrets-level and TLS
+/// settings, so an older reader that cannot understand the extension refuses
+/// to restore a secret-bearing snapshot instead of silently dropping it.
+fn capture_restore_secrets(
+    network: &microsandbox_types::NetworkSpec,
+) -> Option<microsandbox_image::snapshot::RestoreSecretsPayload> {
+    let secrets_config = network.secrets.as_ref()?;
+    if secrets_config.secrets.is_empty() {
+        return None;
+    }
+    Some(microsandbox_image::snapshot::RestoreSecretsPayload {
+        secrets: secrets_config
+            .secrets
+            .iter()
+            .map(microsandbox_image::snapshot::RestoreSecretDescriptor::from_entry)
+            .collect(),
+        passthrough_hosts: secrets_config.passthrough_hosts.clone(),
+        violation_action: secrets_config.violation_action.clone(),
+        tls: network.tls.clone().unwrap_or_default(),
+    })
+}
+
 fn resolve_destination(
     local: &LocalBackend,
     name: &str,
@@ -2139,6 +2177,7 @@ mod tests {
             source_sandbox: "box",
             root_disk,
             user: None,
+            restore_secrets: None,
         }
     }
 

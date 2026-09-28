@@ -306,6 +306,11 @@ pub struct SandboxConfig {
     #[serde(skip)]
     pub(crate) restore_boot_overrides: super::restore_builder::RestoreBootOverrides,
 
+    /// Captured secret env vars to intentionally omit from a snapshot restore.
+    /// Restore-only intent; never a durable configuration choice.
+    #[serde(skip)]
+    pub(crate) restore_drop_secrets: std::collections::HashSet<String>,
+
     /// Transient process-launch intent for the current create operation.
     #[serde(skip)]
     pub(crate) launch_intent: LaunchIntent,
@@ -624,6 +629,7 @@ impl SandboxConfig {
         }
         config.restore_overrides = RestoreOverrideIntent::default();
         config.restore_boot_overrides = Default::default();
+        config.restore_drop_secrets = Default::default();
         config.launch_intent = LaunchIntent::None;
         config.launch_cmd_before_override = None;
         config.init_owns_workload = false;
@@ -1139,6 +1145,7 @@ impl Default for SandboxConfig {
             snapshot_upper_layers: Vec::new(),
             restore_overrides: RestoreOverrideIntent::default(),
             restore_boot_overrides: Default::default(),
+            restore_drop_secrets: Default::default(),
             launch_intent: LaunchIntent::None,
             launch_cmd_before_override: None,
             init_owns_workload: false,

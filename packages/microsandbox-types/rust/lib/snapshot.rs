@@ -154,6 +154,7 @@ pub mod manifest;
 /// Pure owned-storage snapshot inventory.
 pub mod owned;
 mod restore_defaults;
+mod restore_secrets;
 
 pub use manifest::*;
 pub use owned::{
@@ -161,3 +162,6 @@ pub use owned::{
     OwnedVolumeData, validate_owned_volumes,
 };
 pub use restore_defaults::{RESTORE_DEFAULTS_EXTENSION, RestoreDefaults};
+pub use restore_secrets::{
+    RESTORE_SECRETS_EXTENSION, RestoreSecretDescriptor, RestoreSecretsPayload,
+};
