@@ -1,6 +1,8 @@
 //! Dedicated snapshot restoration with explicit destination resource choices.
 
 #[cfg(feature = "net")]
+use microsandbox_network::builder::SecretBuilder;
+#[cfg(feature = "net")]
 use microsandbox_network::policy::NetworkPolicy;
 
 use super::config::SnapshotRestoreMode;
@@ -163,6 +165,34 @@ impl RestoreBuilder {
     #[cfg(feature = "net")]
     pub fn disable_network(mut self) -> Self {
         self.inner = self.inner.disable_network();
+        self
+    }
+
+    /// Supply a value for a secret the source sandbox had at capture time (matched by env
+    /// var), or add a destination-only secret the snapshot never captured.
+    ///
+    /// For a captured secret, the restored guest already holds the original placeholder in
+    /// its environment, so this call's placeholder is ignored in favor of the captured one;
+    /// its allowed hosts, substitution policy, and other options are authoritative, exactly
+    /// like [`SandboxBuilder::secret`](super::SandboxBuilder::secret). A captured secret with
+    /// no matching call here, and no matching [`Self::drop_secret`], fails restore: values are
+    /// never inherited from the source, and a snapshot with no captured secrets rejects both.
+    #[cfg(feature = "net")]
+    pub fn secret(mut self, f: impl FnOnce(SecretBuilder) -> SecretBuilder) -> Self {
+        self.inner = self.inner.secret(f);
+        self
+    }
+
+    /// Intentionally omit a secret the source sandbox had at capture time.
+    ///
+    /// The restored guest never receives this secret's placeholder or value. Naming an
+    /// env var the snapshot never captured fails restore.
+    pub fn drop_secret(mut self, env_var: impl Into<String>) -> Self {
+        self.inner
+            .config
+            .restore_drop_secrets
+            .get_or_insert_with(Default::default)
+            .insert(env_var.into());
         self
     }
 
@@ -483,6 +513,33 @@ mod tests {
         assert!(config(&restore).spec.network.ports.is_empty());
         assert!(!config(&restore).restore_resources.inherit);
         assert!(config(&restore).spec.runtime.user.is_none());
+    }
+
+    #[test]
+    fn drop_secret_records_the_env_var_transiently() {
+        let restore = Sandbox::restore("saved")
+            .name("child")
+            .drop_secret("API_KEY");
+        assert!(config(&restore).restore_drop_secrets.contains("API_KEY"));
+        // Restore-only intent, never persisted alongside the destination config.
+        assert!(
+            config(&restore)
+                .clone_for_persistence()
+                .restore_drop_secrets
+                .is_empty()
+        );
+    }
+
+    #[cfg(feature = "net")]
+    #[test]
+    fn secret_delegates_to_the_inner_sandbox_builder() {
+        let restore = Sandbox::restore("saved")
+            .name("child")
+            .secret(|s| s.env("API_KEY").value("shhh").allow("api.example.com"));
+        let network = config(&restore).local_network_config().unwrap();
+        assert_eq!(network.secrets.secrets.len(), 1);
+        assert_eq!(network.secrets.secrets[0].env_var, "API_KEY");
+        assert!(network.tls.enabled);
     }
 
     #[test]

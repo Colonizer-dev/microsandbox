@@ -25,7 +25,10 @@ pub use manifest::{
     SnapshotFormat, SnapshotId, SnapshotRootDisk, SnapshotScope, SnapshotState, UpperIntegrity,
     UpperLayer, layer_path,
 };
-pub use microsandbox_types::snapshot::{RESTORE_DEFAULTS_EXTENSION, RestoreDefaults};
+pub use microsandbox_types::snapshot::{
+    RESTORE_DEFAULTS_EXTENSION, RESTORE_SECRETS_EXTENSION, RestoreDefaults,
+    RestoreSecretDescriptor, RestoreSecretsPayload,
+};
 pub use owned::{
     OWNED_VOLUMES_EXTENSION, OwnedDirectoryPayload, OwnedMountSnapshot, OwnedVolumeCapture,
     OwnedVolumeData, validate_owned_resources, validate_owned_volumes,

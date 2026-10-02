@@ -43,6 +43,7 @@ pub const MAX_FILE_LAYERS: usize = 256;
 pub const SUPPORTED_REQUIRES: &[&str] = &[
     super::RESTORE_DEFAULTS_EXTENSION,
     super::OWNED_VOLUMES_EXTENSION,
+    super::RESTORE_SECRETS_EXTENSION,
 ];
 
 //--------------------------------------------------------------------------------------------------
@@ -479,6 +480,7 @@ impl Manifest {
         }
         self.restore_defaults()?;
         self.owned_volumes()?;
+        self.restore_secrets()?;
         Ok(())
     }
 
@@ -957,6 +959,53 @@ mod tests {
         assert!(
             manifest.validate().is_err(),
             "ownership cannot be advisory extension data"
+        );
+    }
+
+    #[test]
+    fn restore_secrets_are_required_but_empty_capture_keeps_released_bytes() {
+        use super::super::{
+            RESTORE_SECRETS_EXTENSION, RestoreSecretDescriptor, RestoreSecretsPayload,
+        };
+        let mut manifest = descriptor();
+        let original = manifest.to_canonical_bytes().unwrap();
+        manifest
+            .set_restore_secrets(RestoreSecretsPayload::default())
+            .unwrap();
+        assert_eq!(manifest.to_canonical_bytes().unwrap(), original);
+        assert!(manifest.restore_secrets().unwrap().is_none());
+
+        let payload = RestoreSecretsPayload {
+            secrets: vec![RestoreSecretDescriptor {
+                env_var: "API_KEY".into(),
+                placeholder: "{{API_KEY}}".into(),
+                allowed_hosts: Vec::new(),
+                substitution: Default::default(),
+                passthrough_hosts: Vec::new(),
+                violation_action: None,
+                require_tls_identity: true,
+            }],
+            passthrough_hosts: None,
+            violation_action: Default::default(),
+            tls: Default::default(),
+        };
+        manifest.set_restore_secrets(payload.clone()).unwrap();
+        assert!(
+            manifest
+                .requires
+                .iter()
+                .any(|key| key == RESTORE_SECRETS_EXTENSION)
+        );
+        assert!(manifest.unsupported_requires().is_empty());
+        let restored = Manifest::from_bytes(&manifest.to_canonical_bytes().unwrap()).unwrap();
+        assert_eq!(
+            restored.restore_secrets().unwrap().unwrap().secrets[0].env_var,
+            "API_KEY"
+        );
+        manifest.requires.clear();
+        assert!(
+            manifest.validate().is_err(),
+            "restore secrets cannot be advisory extension data"
         );
     }
 

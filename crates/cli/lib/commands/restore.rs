@@ -112,6 +112,21 @@ pub struct RestoreControlArgs {
     #[cfg(feature = "net")]
     #[arg(long)]
     pub max_udp_connections: Option<usize>,
+    /// Re-supply a secret captured in the snapshot (`ENV[:OPTIONS]@HOST[,HOST...]`).
+    /// Same grammar as `run`/`create`: the value is read from the caller's
+    /// environment at start time, never from the snapshot or this flag.
+    /// Every secret captured by the snapshot must be re-supplied with
+    /// `--secret` or explicitly given up with `--drop-secret`, or restore
+    /// fails closed instead of silently losing TLS interception.
+    #[cfg(feature = "net")]
+    #[arg(long)]
+    pub secret: Vec<String>,
+    /// Give up a secret captured in the snapshot instead of re-supplying it: ENV.
+    /// The restored guest keeps its placeholder for ENV, but no value is
+    /// substituted for it. Repeatable; must not name the same ENV as `--secret`.
+    #[cfg(feature = "net")]
+    #[arg(long, value_name = "ENV")]
+    pub drop_secret: Vec<String>,
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -154,6 +169,35 @@ impl RestoreControlArgs {
             if let Some(limit) = self.max_udp_connections {
                 builder = builder.max_udp_connections(limit);
             }
+            builder = self.apply_secrets(builder)?;
+        }
+        Ok(builder)
+    }
+
+    /// Re-supply or drop each secret captured in the snapshot.
+    ///
+    /// Reuses `create`/`run`'s `--secret` grammar and merge-by-env-var
+    /// behavior so repeated `--secret ENV@HOST` flags for the same ENV
+    /// combine the same way. `--secret` and `--drop-secret` are rejected
+    /// together for the same ENV: each captured secret is supplied exactly
+    /// once, either with a value source or an explicit drop.
+    #[cfg(feature = "net")]
+    fn apply_secrets(&self, mut builder: RestoreBuilder) -> anyhow::Result<RestoreBuilder> {
+        let secret_specs = super::common::collect_parsed_secrets(&self.secret, "restore")?;
+        for secret in &secret_specs {
+            if self.drop_secret.contains(&secret.env_var) {
+                anyhow::bail!(
+                    "restore --secret and --drop-secret both name {}; supply or drop each \
+                     captured secret exactly once",
+                    secret.env_var
+                );
+            }
+        }
+        for secret in secret_specs {
+            builder = builder.secret(|s| super::common::configure_secret_from_parsed(s, &secret));
+        }
+        for env in &self.drop_secret {
+            builder = builder.drop_secret(env);
         }
         Ok(builder)
     }
@@ -491,5 +535,85 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[cfg(feature = "net")]
+    #[test]
+    fn restore_parses_repeated_secret_and_drop_secret_with_options() {
+        let cli = TestCli::try_parse_from([
+            "restore",
+            "ready",
+            "--name",
+            "worker",
+            "--secret",
+            "API_KEY:query@api.example.com",
+            "--secret",
+            "API_KEY@api.example.com,backup.example.com",
+            "--drop-secret",
+            "OTHER_TOKEN",
+            "--drop-secret",
+            "THIRD_TOKEN",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.args.controls.secret,
+            vec![
+                "API_KEY:query@api.example.com".to_string(),
+                "API_KEY@api.example.com,backup.example.com".to_string(),
+            ]
+        );
+        assert_eq!(
+            cli.args.controls.drop_secret,
+            vec!["OTHER_TOKEN".to_string(), "THIRD_TOKEN".to_string()]
+        );
+        assert!(cli.args.controls.apply(Sandbox::restore("ready")).is_ok());
+    }
+
+    #[cfg(feature = "net")]
+    #[test]
+    fn restore_rejects_inline_secret_value_syntax() {
+        let cli = TestCli::try_parse_from([
+            "restore",
+            "ready",
+            "--name",
+            "worker",
+            "--secret",
+            "API_KEY=literal@api.example.com",
+        ])
+        .unwrap();
+        let error = cli
+            .args
+            .controls
+            .apply(Sandbox::restore("ready"))
+            .err()
+            .expect("inline secret value must be rejected")
+            .to_string();
+        assert!(error.contains("inline secret values"));
+    }
+
+    #[cfg(feature = "net")]
+    #[test]
+    fn restore_rejects_same_env_in_secret_and_drop_secret() {
+        let cli = TestCli::try_parse_from([
+            "restore",
+            "ready",
+            "--name",
+            "worker",
+            "--secret",
+            "API_KEY@api.example.com",
+            "--drop-secret",
+            "API_KEY",
+        ])
+        .unwrap();
+        let error = cli
+            .args
+            .controls
+            .apply(Sandbox::restore("ready"))
+            .err()
+            .expect("conflicting --secret/--drop-secret must be rejected")
+            .to_string();
+        assert!(error.contains("API_KEY"));
+        assert!(error.contains("--secret"));
+        assert!(error.contains("--drop-secret"));
     }
 }

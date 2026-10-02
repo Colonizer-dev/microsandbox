@@ -2486,43 +2486,9 @@ fn apply_network_opts(
     // Secrets. `create` persists a host-side source reference, not the raw
     // value: the plaintext is read from the host environment at spawn time so
     // the durable config never stores secret material at rest.
-    let mut secret_specs: Vec<ParsedSecret> = Vec::new();
-    for secret_str in &opts.secret {
-        let parsed = parse_secret(secret_str, "create")?;
-        match secret_specs
-            .iter_mut()
-            .find(|existing| existing.env_var == parsed.env_var)
-        {
-            Some(existing) => {
-                extend_unique(&mut existing.allowed_hosts, parsed.allowed_hosts);
-                extend_unique(&mut existing.passthrough_hosts, parsed.passthrough_hosts);
-                existing.substitute_headers &= parsed.substitute_headers;
-                existing.substitute_query |= parsed.substitute_query;
-                existing.substitute_body |= parsed.substitute_body;
-            }
-            None => secret_specs.push(parsed),
-        }
-    }
-    for secret in secret_specs {
-        let env_var = secret.env_var;
-        let source = microsandbox::sandbox::SecretSource::Env {
-            var: env_var.clone(),
-        };
-        builder = builder.secret(|mut s| {
-            s = s
-                .env(&env_var)
-                .source(source)
-                .substitute_in_headers(secret.substitute_headers)
-                .substitute_in_query(secret.substitute_query)
-                .substitute_in_body(secret.substitute_body);
-            for host in secret.allowed_hosts {
-                s = allow_secret_host(s, &host);
-            }
-            for host in secret.passthrough_hosts {
-                s = s.allow_placeholder_for(host);
-            }
-            s
-        });
+    let secret_specs = collect_parsed_secrets(&opts.secret, "create")?;
+    for secret in &secret_specs {
+        builder = builder.secret(|s| configure_secret_from_parsed(s, secret));
     }
 
     let proxy = opts.build_outbound_proxy()?;
@@ -2977,6 +2943,66 @@ fn allow_secret_host(
             builder.allow_any_host_dangerous(true)
         }
     }
+}
+
+/// Parse repeated `--secret` specs for `command`, merging repeated entries
+/// for the same env var: later hosts and passthrough hosts are unioned, and
+/// substitution locations combine so any flag occurrence that enables a
+/// location keeps it enabled.
+///
+/// Shared by `create`/`run` and `restore`, which use the identical grammar.
+#[cfg(feature = "net")]
+pub(crate) fn collect_parsed_secrets(
+    specs: &[String],
+    command: &str,
+) -> anyhow::Result<Vec<ParsedSecret>> {
+    let mut secret_specs: Vec<ParsedSecret> = Vec::new();
+    for secret_str in specs {
+        let parsed = parse_secret(secret_str, command)?;
+        match secret_specs
+            .iter_mut()
+            .find(|existing| existing.env_var == parsed.env_var)
+        {
+            Some(existing) => {
+                extend_unique(&mut existing.allowed_hosts, parsed.allowed_hosts);
+                extend_unique(&mut existing.passthrough_hosts, parsed.passthrough_hosts);
+                existing.substitute_headers &= parsed.substitute_headers;
+                existing.substitute_query |= parsed.substitute_query;
+                existing.substitute_body |= parsed.substitute_body;
+            }
+            None => secret_specs.push(parsed),
+        }
+    }
+    Ok(secret_specs)
+}
+
+/// Configure a [`microsandbox::sandbox::SecretBuilder`] from a parsed
+/// `--secret` spec. The value is never read here: `source` records a
+/// host-side reference resolved from the environment at spawn time.
+///
+/// Shared by `create`/`run` and `restore`, which use the identical
+/// builder-closure construction.
+#[cfg(feature = "net")]
+pub(crate) fn configure_secret_from_parsed(
+    mut s: microsandbox::sandbox::SecretBuilder,
+    secret: &ParsedSecret,
+) -> microsandbox::sandbox::SecretBuilder {
+    let source = microsandbox::sandbox::SecretSource::Env {
+        var: secret.env_var.clone(),
+    };
+    s = s
+        .env(&secret.env_var)
+        .source(source)
+        .substitute_in_headers(secret.substitute_headers)
+        .substitute_in_query(secret.substitute_query)
+        .substitute_in_body(secret.substitute_body);
+    for host in &secret.allowed_hosts {
+        s = allow_secret_host(s, host);
+    }
+    for host in &secret.passthrough_hosts {
+        s = s.allow_placeholder_for(host);
+    }
+    s
 }
 
 /// Parse a scoped upstream CA spec: `PATTERN=PATH`.

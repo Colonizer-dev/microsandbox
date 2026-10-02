@@ -262,6 +262,8 @@ msb snap restore ./saved.msb --name disk-copy --disk-only
 | `--max-connections` | Deprecated TCP-only alias; cannot be combined with `--max-tcp-connections` |
 | `--max-duration` | Destination sandbox lifetime bound, e.g. `10m` |
 | `--idle-timeout` | Destination inactivity bound, e.g. `2m` |
+| `--secret` | Re-supply a captured secret: `ENV[:OPTIONS]@HOST[,HOST...]`, same grammar as `run`/`create`. Repeatable |
+| `--drop-secret` | Give up a captured secret instead of re-supplying it: `ENV`. Repeatable |
 | `-q`, `--quiet` | Hide progress, but not unavailable-resource warnings |
 
 Progress is shown by default. Memory preparation has no fixed timeout and does not consume the activation timeout.
@@ -269,6 +271,8 @@ Progress is shown by default. Memory preparation has no fixed timeout and does n
 Full restore must keep captured CPU and memory settings and cannot apply a guest security profile. Use `--disk-only` to change them.
 
 Network flags replace the destination policy. `--net-rule` requires `--net-default` or `--no-net`; omitting all policy flags keeps configured defaults. Restore requires a new name and does not accept a startup command.
+
+A snapshot taken with `--secret` captures which environment variables were protected and their TLS interception setup, never the values. Restoring that snapshot requires each captured secret to be re-supplied with `--secret ENV@HOST[,HOST...]` (value read from the caller's environment at start time, exactly as with `run`) or explicitly given up with `--drop-secret ENV`; otherwise restore fails closed instead of silently booting without TLS interception. Naming the same `ENV` in both `--secret` and `--drop-secret` is rejected.
 
 Restore and branch do not reuse host resources by default. Map directories with `-v /host/path:/guest/path`, select a private captured disk with `-v /guest/path`, and publish new listeners with `-p HOST:GUEST`. Full restore refuses missing external filesystems and additional disks unless `--allow-missing-resources` is explicit. Opting out leaves those devices unavailable: backend I/O returns errors, although data cached in guest RAM may remain readable. Disk errors can abort a guest filesystem journal or make it read-only. Warnings remain visible with `--quiet`. `--external-mount-policy relaxed` permits supported stale-object mismatches; it does not waive missing backing. `--dangerously-inherit-resources` authorizes validated source-local bindings, not missing ones. Direct branching retains its existing unavailable-resource behavior. Root and owned storage are always reconstructed; the opt-out cannot waive corrupt or missing snapshot data. Custom vsock routes are not inherited; use `--vsock HOST_PATH:PORT` to authorize a service for clients to reconnect to.
 

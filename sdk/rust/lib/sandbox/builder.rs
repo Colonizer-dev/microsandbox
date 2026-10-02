@@ -1984,6 +1984,11 @@ pub(crate) fn prepare_local_snapshot_restore(
             )),
         ));
     }
+    merge_restore_secrets(
+        snap.manifest().restore_secrets()?,
+        &mut config.spec.network,
+        &config.restore_drop_secrets,
+    )?;
     let snap_ref = snap.manifest().image.reference.clone();
     config.spec.image = RootfsSource::oci(snap_ref);
     config.manifest_digest = Some(snap.manifest().image.manifest_digest.clone());
@@ -2082,6 +2087,103 @@ pub(crate) fn prepare_local_snapshot_restore(
     if !owned.is_empty() {
         config.snapshot_owned_source = Some((snap.path()?.to_path_buf(), owned));
     }
+    Ok(())
+}
+
+/// Merge captured secret descriptors and TLS state from a snapshot onto the destination
+/// network configuration. Pure and independently testable: the caller resolves `payload`
+/// from the manifest and passes the destination network spec already populated by any
+/// `.secret(...)` calls, plus the env vars named by any `.drop_secret(...)` calls.
+///
+/// Values are never captured or restored from the snapshot itself. A destination secret
+/// whose env var was captured keeps its own value/allowed_hosts/substitution/etc — the
+/// restore call is authoritative, exactly like a fresh `SandboxBuilder::secret` — but its
+/// placeholder is forced to the captured one, because the restored guest's environment
+/// already holds that exact placeholder string. Everything else is fail-closed: a captured
+/// secret with neither a matching destination secret nor a matching drop is an error, as is
+/// a destination secret or drop naming an env var the snapshot never captured, and supplying
+/// any secret or drop when the snapshot captured none at all. When anything was captured,
+/// TLS interception is force-enabled from the captured configuration (even if every secret
+/// was dropped), so the runtime regenerates the `tls/ca.pem` the restored guest's reconnected
+/// virtio_fs1 handles expect.
+#[cfg(feature = "local")]
+fn merge_restore_secrets(
+    payload: Option<microsandbox_image::snapshot::RestoreSecretsPayload>,
+    network: &mut microsandbox_types::NetworkSpec,
+    drop_secrets: &HashSet<String>,
+) -> MicrosandboxResult<()> {
+    let destination_secrets = network
+        .secrets
+        .as_ref()
+        .map(|secrets| secrets.secrets.clone())
+        .unwrap_or_default();
+
+    let Some(payload) = payload else {
+        if !destination_secrets.is_empty() || !drop_secrets.is_empty() {
+            return Err(MicrosandboxError::InvalidConfig(
+                "snapshot did not capture any secrets; restore cannot add secrets the guest never had".into(),
+            ));
+        }
+        return Ok(());
+    };
+
+    let captured: BTreeMap<&str, &microsandbox_image::snapshot::RestoreSecretDescriptor> = payload
+        .secrets
+        .iter()
+        .map(|descriptor| (descriptor.env_var.as_str(), descriptor))
+        .collect();
+
+    let mut merged = Vec::with_capacity(destination_secrets.len());
+    let mut supplied = HashSet::new();
+    for mut entry in destination_secrets {
+        if !supplied.insert(entry.env_var.clone()) {
+            return Err(MicrosandboxError::InvalidConfig(format!(
+                "secret '{}' supplied more than once for restore",
+                entry.env_var
+            )));
+        }
+        let Some(descriptor) = captured.get(entry.env_var.as_str()) else {
+            return Err(MicrosandboxError::InvalidConfig(format!(
+                "snapshot did not capture secret '{}'; pass --drop-secret {} to omit it instead of supplying a value",
+                entry.env_var, entry.env_var
+            )));
+        };
+        entry.placeholder = descriptor.placeholder.clone();
+        merged.push(entry);
+    }
+
+    for env_var in drop_secrets {
+        if supplied.contains(env_var) {
+            return Err(MicrosandboxError::InvalidConfig(format!(
+                "secret '{env_var}' was both supplied and dropped for restore"
+            )));
+        }
+        if !captured.contains_key(env_var.as_str()) {
+            return Err(MicrosandboxError::InvalidConfig(format!(
+                "snapshot did not capture secret '{env_var}'; nothing to drop"
+            )));
+        }
+    }
+
+    for descriptor in &payload.secrets {
+        if supplied.contains(&descriptor.env_var) || drop_secrets.contains(&descriptor.env_var) {
+            continue;
+        }
+        return Err(MicrosandboxError::InvalidConfig(format!(
+            "snapshot captured secret '{}'; pass --secret {}@HOST to supply its value or --drop-secret {} to omit it",
+            descriptor.env_var, descriptor.env_var, descriptor.env_var
+        )));
+    }
+
+    let secrets_config = network.secrets.get_or_insert_with(Default::default);
+    secrets_config.secrets = merged;
+    secrets_config.passthrough_hosts = payload.passthrough_hosts;
+    secrets_config.violation_action = payload.violation_action;
+
+    let mut tls = payload.tls;
+    tls.enabled = true;
+    network.tls = Some(tls);
+
     Ok(())
 }
 
@@ -2366,7 +2468,7 @@ mod tests {
     use crate::config::GlobalConfigPatch;
     use crate::sandbox::config::RestoreOverrideIntent;
     use crate::sandbox::{MAX_HOSTNAME_BYTES, MAX_SANDBOX_NAME_BYTES, RlimitResource};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashSet};
 
     #[cfg(feature = "net")]
     #[test]
@@ -4913,5 +5015,146 @@ mod tests {
                 .to_string()
                 .contains("forked")
         );
+    }
+
+    fn restore_secret_entry(env_var: &str, placeholder: &str) -> microsandbox_types::SecretEntry {
+        microsandbox_types::SecretEntry {
+            env_var: env_var.into(),
+            value: "value-resolved-host-side".to_string().into(),
+            source: None,
+            placeholder: placeholder.into(),
+            allowed_hosts: vec![microsandbox_types::HostPattern::Exact(
+                "api.example.com".into(),
+            )],
+            substitution: Default::default(),
+            passthrough_hosts: Vec::new(),
+            violation_action: None,
+            require_tls_identity: true,
+        }
+    }
+
+    fn captured_secret_descriptor(
+        env_var: &str,
+        placeholder: &str,
+    ) -> microsandbox_image::snapshot::RestoreSecretDescriptor {
+        microsandbox_image::snapshot::RestoreSecretDescriptor {
+            env_var: env_var.into(),
+            placeholder: placeholder.into(),
+            allowed_hosts: Vec::new(),
+            substitution: Default::default(),
+            passthrough_hosts: Vec::new(),
+            violation_action: None,
+            require_tls_identity: true,
+        }
+    }
+
+    fn captured_secrets_payload(
+        descriptors: Vec<microsandbox_image::snapshot::RestoreSecretDescriptor>,
+    ) -> microsandbox_image::snapshot::RestoreSecretsPayload {
+        microsandbox_image::snapshot::RestoreSecretsPayload {
+            secrets: descriptors,
+            passthrough_hosts: None,
+            violation_action: Default::default(),
+            tls: Default::default(),
+        }
+    }
+
+    #[test]
+    fn merge_restore_secrets_forces_captured_placeholder_and_keeps_destination_options() {
+        let payload = captured_secrets_payload(vec![captured_secret_descriptor(
+            "API_KEY",
+            "{{captured-placeholder}}",
+        )]);
+        let mut network = microsandbox_types::NetworkSpec {
+            secrets: Some(microsandbox_types::SecretsConfig {
+                secrets: vec![restore_secret_entry("API_KEY", "destination-placeholder")],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        super::merge_restore_secrets(Some(payload), &mut network, &HashSet::new()).unwrap();
+        let secrets_config = network.secrets.take().unwrap();
+        assert_eq!(secrets_config.secrets.len(), 1);
+        // Placeholder is forced from the capture; the guest environment already holds it.
+        assert_eq!(
+            secrets_config.secrets[0].placeholder,
+            "{{captured-placeholder}}"
+        );
+        // Everything else is the destination's own authoritative choice.
+        assert_eq!(
+            secrets_config.secrets[0].allowed_hosts,
+            vec![microsandbox_types::HostPattern::Exact(
+                "api.example.com".into()
+            )]
+        );
+        assert!(network.tls.as_ref().unwrap().enabled);
+    }
+
+    #[test]
+    fn merge_restore_secrets_fails_closed_when_a_captured_secret_is_neither_supplied_nor_dropped() {
+        let payload =
+            captured_secrets_payload(vec![captured_secret_descriptor("API_KEY", "{{captured}}")]);
+        let mut network = microsandbox_types::NetworkSpec::default();
+        assert!(
+            super::merge_restore_secrets(Some(payload), &mut network, &HashSet::new()).is_err()
+        );
+    }
+
+    #[test]
+    fn merge_restore_secrets_drop_secret_omits_it_but_keeps_tls_enabled() {
+        let payload =
+            captured_secrets_payload(vec![captured_secret_descriptor("API_KEY", "{{captured}}")]);
+        let mut network = microsandbox_types::NetworkSpec::default();
+        let drop = HashSet::from(["API_KEY".to_string()]);
+        super::merge_restore_secrets(Some(payload), &mut network, &drop).unwrap();
+        assert!(network.secrets.unwrap().secrets.is_empty());
+        assert!(network.tls.unwrap().enabled);
+    }
+
+    #[test]
+    fn merge_restore_secrets_fails_on_a_destination_secret_the_snapshot_never_captured() {
+        let payload = captured_secrets_payload(Vec::new());
+        let mut network = microsandbox_types::NetworkSpec {
+            secrets: Some(microsandbox_types::SecretsConfig {
+                secrets: vec![restore_secret_entry("UNCAPTURED", "p")],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(
+            super::merge_restore_secrets(Some(payload), &mut network, &HashSet::new()).is_err()
+        );
+    }
+
+    #[test]
+    fn merge_restore_secrets_fails_on_a_drop_the_snapshot_never_captured() {
+        let payload = captured_secrets_payload(Vec::new());
+        let mut network = microsandbox_types::NetworkSpec::default();
+        let drop = HashSet::from(["UNCAPTURED".to_string()]);
+        assert!(super::merge_restore_secrets(Some(payload), &mut network, &drop).is_err());
+    }
+
+    #[test]
+    fn merge_restore_secrets_fails_when_nothing_captured_but_a_secret_or_drop_is_supplied() {
+        let mut network = microsandbox_types::NetworkSpec {
+            secrets: Some(microsandbox_types::SecretsConfig {
+                secrets: vec![restore_secret_entry("API_KEY", "p")],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(super::merge_restore_secrets(None, &mut network, &HashSet::new()).is_err());
+
+        let mut network = microsandbox_types::NetworkSpec::default();
+        let drop = HashSet::from(["API_KEY".to_string()]);
+        assert!(super::merge_restore_secrets(None, &mut network, &drop).is_err());
+    }
+
+    #[test]
+    fn merge_restore_secrets_is_a_noop_when_nothing_captured_and_nothing_supplied() {
+        let mut network = microsandbox_types::NetworkSpec::default();
+        super::merge_restore_secrets(None, &mut network, &HashSet::new()).unwrap();
+        assert!(network.secrets.is_none());
+        assert!(network.tls.is_none());
     }
 }
