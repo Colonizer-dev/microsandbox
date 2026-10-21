@@ -17,7 +17,7 @@ cargo run -p <example-name>
 For example:
 
 ```sh
-cargo run -p oci-root
+cargo run -p root-oci
 cargo run -p net-basic
 cargo run -p fs-read-stream
 ```
