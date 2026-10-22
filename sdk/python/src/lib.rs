@@ -178,7 +178,7 @@ fn backend_scope(
 
 /// Return the active default backend kind.
 #[pyfunction]
-fn default_backend_kind(py: Python<'_>) -> PyResult<PyObject> {
+fn default_backend_kind(py: Python<'_>) -> PyResult<Py<PyAny>> {
     let kind = match microsandbox::default_backend().kind() {
         microsandbox::BackendKind::Local => "local",
         microsandbox::BackendKind::Cloud => "cloud",

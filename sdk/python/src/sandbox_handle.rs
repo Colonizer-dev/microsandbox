@@ -15,7 +15,7 @@ use crate::sandbox::{
 //--------------------------------------------------------------------------------------------------
 
 /// A lightweight handle to a sandbox from the database.
-#[pyclass(name = "SandboxHandle")]
+#[pyclass(name = "SandboxHandle", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PySandboxHandle {
     inner: Arc<microsandbox::sandbox::SandboxHandle>,
@@ -51,7 +51,7 @@ impl PySandboxHandle {
 
     /// Current sandbox lifecycle status.
     #[getter]
-    fn status(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn status(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let guard = &self.inner;
         str_enum_member(
             py,
@@ -75,7 +75,7 @@ impl PySandboxHandle {
     }
 
     /// Parsed sandbox configuration.
-    fn config(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn config(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let guard = &self.inner;
         let value: serde_json::Value =
             serde_json::from_str(guard.config_json()).map_err(|e| to_py_err(e.into()))?;
@@ -604,7 +604,7 @@ impl PySandboxHandle {
 // Functions
 //--------------------------------------------------------------------------------------------------
 
-pub(crate) fn json_value_to_py(py: Python<'_>, value: serde_json::Value) -> PyResult<PyObject> {
+pub(crate) fn json_value_to_py(py: Python<'_>, value: serde_json::Value) -> PyResult<Py<PyAny>> {
     match value {
         serde_json::Value::Null => Ok(py.None()),
         serde_json::Value::Bool(value) => Ok(PyBool::new(py, value).to_owned().unbind().into()),
